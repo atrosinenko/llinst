@@ -1,0 +1,12 @@
+#!/bin/sh
+
+llinst="$(dirname $0)/../bin/clang"
+
+export VERIFY=
+export CC=${llinst}
+export CXX=${llinst}++
+export CFLAGS="-fno-builtin -Wall -Werror"
+export CXXFLAGS="-fno-builtin -Wall -Werror"
+export LDFLAGS="$NATIVE_INST"
+
+exec "$@"

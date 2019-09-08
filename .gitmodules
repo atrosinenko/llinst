@@ -1,0 +1,3 @@
+[submodule "bpfinst-spec"]
+	path = bpfinst-spec
+	url = git@github.com:atrosinenko/bpfinst-spec.git

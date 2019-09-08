@@ -1,0 +1,16 @@
+language: minimal
+os: linux
+dist: bionic
+
+addons:
+  apt:
+    packages:
+    - cmake
+    - clang
+
+script:
+- mkdir build
+- cd build
+- cmake ..
+- make
+- make -C bpfinst-spec/tests

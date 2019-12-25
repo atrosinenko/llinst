@@ -380,7 +380,7 @@ void LLInst::performInstrumentation(Instruction *proto, Instruction *real)
     }
 
     exitPoint = real->getParent()->splitBasicBlock(real);
-    Instruction *entryPoint = exitPoint->getPrevNode()->getTerminator();
+    BranchInst *entryPoint = cast<BranchInst>(exitPoint->getPrevNode()->getTerminator());
     tagToSet = PHINode::Create(U64, 0, "", exitPoint->getFirstNonPHI());
 
     // do not pass nullptr incoming Value* to PHINode, handle all-NULL manually

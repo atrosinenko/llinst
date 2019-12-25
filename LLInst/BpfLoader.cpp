@@ -8,6 +8,10 @@
 
 #include <iostream>
 
+// For old elf.h
+#define RELOC_64_64 1
+#define RELOC_64_32 10
+
 #define str(x) #x
 #define CHECK_THAT(x) if(!(x)) { throw bpf_loader_exception("Check failed: " str(x)); }
 
@@ -103,25 +107,28 @@ void BpfLoader::processRelocations()
       int count = sec->length / sizeof(Elf64_Rel);
       Elf64_Rel *relSection = (Elf64_Rel *)sec->start;
       Elf64_Sym *linkedSymbolTable = (Elf64_Sym *)sections[sec->hdr->sh_link].start;
-      unsigned char *patchedSection = sections[sec->hdr->sh_info].start;
+      BpfSection &patchedSection = sections[sec->hdr->sh_info];
+      if ((patchedSection.hdr->sh_flags & SHF_EXECINSTR) == 0) {
+        continue; // not a code section
+      }
       for (int i = 0; i < count; ++i) {
         Elf64_Rel &rel = relSection[i];
         Elf64_Sym *sym = linkedSymbolTable + ELF64_R_SYM(rel.r_info);
         const char *name = strtab + sym->st_name;
 
-        EBpfInstruction *insn = insnFrom(patchedSection + rel.r_offset);
-        if (ELF64_R_TYPE(rel.r_info) == R_BPF_64_64) {
+        EBpfInstruction *insn = insnFrom(patchedSection.start + rel.r_offset);
+        if (ELF64_R_TYPE(rel.r_info) == RELOC_64_64) {
           if (insn) {
             insn->rel = sym;
             symbols[sym] = name;
           } else {
-//            std::cerr << "Requested relocation of symbol " << name << " outside of any function\n";
+            std::cerr << "Requested relocation of symbol " << name << " outside of any function\n";
           }
-        } else if (ELF64_R_TYPE(rel.r_info) == R_BPF_64_32) {
+        } else if (ELF64_R_TYPE(rel.r_info) == RELOC_64_32) {
           if (callbacks.count(name)) {
             insn->imm = callbacks.at(name);
           } else {
-            std::cerr << "[" << name << "] at " << std::hex << i << "\n";
+            std::cerr << "[" << name << "] at " << std::hex << i << " from [" << sec->name << "]\n";
             throw bpf_loader_exception("Unknown callback");
           }
         } else {
@@ -134,15 +141,26 @@ void BpfLoader::processRelocations()
 
 void BpfLoader::fetchFunctions()
 {
+  std::map<uintptr_t, std::string> functionByPtr;
   for (int i = 0; i < symtabEntryCount; ++i) {
-    Elf64_Sym &sym = symtab[i];
-    const char *name = strtab + sym.st_name;
-    if (sym.st_info == ELF64_ST_INFO(STB_GLOBAL, STT_FUNC)) {
-      std::vector<EBpfInstruction> &func = functions[name];
+    Elf64_Sym *sym = &symtab[i];
+    const char *name = strtab + sym->st_name;
+    // Clang 7 does not mark functions as such
+    // It does not set sizes as well.
+    if (ELF64_ST_BIND(sym->st_info) == STB_GLOBAL && sym->st_shndx < sections.size() && (sections[sym->st_shndx].hdr->sh_flags & SHF_EXECINSTR) != 0) {
+      uint64_t *funcBody = (uint64_t *)(sections[sym->st_shndx].start + sym->st_value);
+      functionByPtr[uintptr_t(funcBody)] = name;
+      functionByPtr[uintptr_t(sections[sym->st_shndx].start + sections[sym->st_shndx].length)] = "";
+    }
+  }
+  uintptr_t previousEnd = 0;
+  for (auto it = functionByPtr.rbegin(); it != functionByPtr.rend(); ++it) {
+    if (it->second != "") {
+      std::vector<EBpfInstruction> &func = functions[it->second];
       CHECK_THAT(func.empty());
-      uint64_t *funcBody = (uint64_t *)(sections[sym.st_shndx].start + symtab[i].st_value);
-      int instructionCount = sym.st_size / 8;
-      for (int j = 0; j < instructionCount; ++j) {
+
+      uint64_t *funcBody = (uint64_t *)(it->first);
+      for (int j = 0; j < (previousEnd - it->first) / 8; ++j) {
         EBpfInstruction insn;
         insn.raw = funcBody[j];
         insn.source = funcBody + j;
@@ -150,6 +168,7 @@ void BpfLoader::fetchFunctions()
         func.push_back(insn);
       }
     }
+    previousEnd = it->first;
   }
 }
 

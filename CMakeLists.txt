@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.12.4)
 project(llinst)
 
 find_package(LLVM REQUIRED CONFIG)
@@ -9,7 +9,7 @@ include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(bpfinst-spec/include)
 
 # Do not crash at Clang exit -- like in AFL llvm-mode
-add_link_options(-z nodelete)
+set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -z nodelete")
 
 add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/noninstrumented.o

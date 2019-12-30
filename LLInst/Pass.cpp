@@ -69,12 +69,9 @@ namespace {
    */
   struct LlvmState {
     /**
-     * @brief The original instruction being instrumented.
-     *
-     * @warning Should be considered opaque and used only for setting tag
-     *          and for debug output, not inspected!
+     * @brief Instruction to set tag on
      */
-    Instruction *origInsnForReference;
+    Instruction *taggedInsn;
     /**
      * @brief Instruction for callbacks to fetch info from.
      */
@@ -181,13 +178,13 @@ namespace {
     void setTag(Value *tag)
     {
       if (tag != nullptr) {
-        tagByValue[nowInstrumented.origInsnForReference] = tag;
+        tagByValue[nowInstrumented.taggedInsn] = tag;
       } else {
-        tagByValue.erase(nowInstrumented.origInsnForReference);
+        tagByValue.erase(nowInstrumented.taggedInsn);
       }
     }
 
-    void setOperand(unsigned index, Value *opnd);
+    void setOperand(unsigned index, Value *opnd, Instruction *insertionPoint);
 
     Value *getReg(unsigned ind)
     {
@@ -253,7 +250,7 @@ namespace {
     void createSubstitutes();
 
     void instrumentFunctionEntry(Function *F, Instruction *insertionPoint);
-    void performInstrumentation(Instruction *proto, Instruction *real);
+    void performInstrumentation(Instruction *proto, Instruction *taggedInsn, Instruction *insertionPoint);
     void instrumentPHI(PHINode *I);
     void instrumentCall(CallInst *I);
     void instrumentRet(ReturnInst *I);
@@ -331,9 +328,9 @@ LLInst::LLInst() :
 {
 }
 
-void LLInst::setOperand(unsigned index, Value *opnd)
+void LLInst::setOperand(unsigned index, Value *opnd, Instruction *insertionPoint)
 {
-  IRBuilder<> irb(nowInstrumented.origInsnForReference);
+  IRBuilder<> irb(insertionPoint);
   nowInstrumented.opnds[index] = opnd; // should be original insn!
 
   if (isa<PointerType>(opnd->getType()))
@@ -351,35 +348,35 @@ void LLInst::setOperand(unsigned index, Value *opnd)
   }
 }
 
-void LLInst::performInstrumentation(Instruction *proto, Instruction *real)
+void LLInst::performInstrumentation(Instruction *proto, Instruction *taggedInsn, Instruction *insertionPoint)
 {
   instrumenter = instrumenters[proto->getOpcode()];
   if (instrumenter) {
     bpfState = BpfState();
 
-    nowInstrumented.origInsnForReference = real;
+    nowInstrumented.taggedInsn = taggedInsn;
     nowInstrumented.prototypeInsn = proto;
     memset(&nowInstrumented.opnds, 0, sizeof(nowInstrumented.opnds));
 
     // populate operands
     if (isa<StoreInst>(proto)) {
-      setOperand(0, cast<StoreInst>(proto)->getPointerOperand());
-      setOperand(1, cast<StoreInst>(proto)->getValueOperand());
+      setOperand(0, cast<StoreInst>(proto)->getPointerOperand(), insertionPoint);
+      setOperand(1, cast<StoreInst>(proto)->getValueOperand(), insertionPoint);
     } else if (isa<BranchInst>(proto)) {
       BranchInst *br = cast<BranchInst>(proto);
       if (br->isConditional())
-        setOperand(0, br->getCondition());
+        setOperand(0, br->getCondition(), insertionPoint);
       else
-        setOperand(0, ConstantInt::get(U64, 1));
+        setOperand(0, ConstantInt::get(U64, 1), insertionPoint);
     } else if (isa<IndirectBrInst>(proto)) {
       // no operands
     } else {
       for (unsigned ind = 0; ind < proto->getNumOperands() && ind <= 2; ++ind) {
-        setOperand(ind, proto->getOperand(ind));
+        setOperand(ind, proto->getOperand(ind), insertionPoint);
       }
     }
 
-    exitPoint = real->getParent()->splitBasicBlock(real);
+    exitPoint = insertionPoint->getParent()->splitBasicBlock(insertionPoint);
     BranchInst *entryPoint = cast<BranchInst>(exitPoint->getPrevNode()->getTerminator());
     tagToSet = PHINode::Create(U64, 0, "", exitPoint->getFirstNonPHI());
 
@@ -387,7 +384,7 @@ void LLInst::performInstrumentation(Instruction *proto, Instruction *real)
     bpfState.returnedTag = ConstantInt::get(U64, 0);
     maySetTag = false;
 
-    BasicBlock *instrumenterContainer = BasicBlock::Create(M->getContext(), "", real->getFunction(), exitPoint);
+    BasicBlock *instrumenterContainer = BasicBlock::Create(M->getContext(), "", insertionPoint->getFunction(), exitPoint);
     entryPoint->setSuccessor(0, instrumenterContainer);
 
     // perform actual instrumentation
@@ -470,7 +467,7 @@ void LLInst::instrumentSelect(SelectInst *I)
     BasicBlock *dummy1 = BasicBlock::Create(M->getContext());
     BasicBlock *dummy2 = BasicBlock::Create(M->getContext());
     Instruction *proto = BranchInst::Create(dummy1, dummy2, I->getCondition());
-    performInstrumentation(proto, I);
+    performInstrumentation(proto, I, I);
     proto->deleteValue();
     dummy1->deleteValue();
     dummy2->deleteValue();
@@ -492,8 +489,8 @@ void LLInst::instrumentSwitch(SwitchInst *I)
       BasicBlock *dummy1 = BasicBlock::Create(M->getContext());
       BasicBlock *dummy2 = BasicBlock::Create(M->getContext());
       Instruction *brProto = BranchInst::Create(dummy1, dummy2, condProto);
-      performInstrumentation(condProto, I);
-      performInstrumentation(brProto, I);
+      performInstrumentation(condProto, condProto, I);
+      performInstrumentation(brProto, brProto, I);
       brProto->deleteValue();
       dummy1->deleteValue();
       dummy2->deleteValue();
@@ -503,7 +500,7 @@ void LLInst::instrumentSwitch(SwitchInst *I)
     BasicBlock *dummy1 = BasicBlock::Create(M->getContext());
     BasicBlock *dummy2 = BasicBlock::Create(M->getContext());
     Instruction *brProto = BranchInst::Create(dummy1, dummy2, ConstantInt::getTrue(M->getContext()));
-    performInstrumentation(brProto, I);
+    performInstrumentation(brProto, brProto, I);
     brProto->deleteValue();
     dummy1->deleteValue();
     dummy2->deleteValue();
@@ -549,7 +546,7 @@ bool LLInst::runOnModule(Module &_M) {
       instrumentRet(dyn_cast<ReturnInst>(I));
       instrumentSelect(dyn_cast<SelectInst>(I));
 
-      performInstrumentation(I, I); // try generic case
+      performInstrumentation(I, I, I); // try generic case
     }
   }
 

@@ -915,10 +915,13 @@ void LLInst::instrumentOneInstruction(BasicBlock *BB, unsigned currentInstInsnId
       if (currentInsn.rel) {
         IRBuilder<> irb(BB);
         if (importBySymbol.count(currentInsn.rel)) {
-          setReg(currentInsn.dst, irb.CreatePtrToInt(importBySymbol[currentInsn.rel], U64));
+          setReg(currentInsn.dst, irb.CreateAdd(
+                   irb.CreatePtrToInt(importBySymbol[currentInsn.rel], U64),
+                   ConstantInt::get(U64, currentInsn.imm + currentInsn.rel->st_value)
+                 ));
         } else {
           Value * addr = irb.CreateAdd(irb.CreatePtrToInt(sections[loader.getSections()[currentInsn.rel->st_shndx].hdr], U64),
-                                       ConstantInt::get(U64, currentInsn.rel->st_value));
+                                       ConstantInt::get(U64, currentInsn.imm + currentInsn.rel->st_value));
           setReg(currentInsn.dst, addr);
         }
       } else {

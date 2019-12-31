@@ -485,7 +485,8 @@ void LLInst::instrumentSwitch(SwitchInst *I)
     // br label_default
 
     for (auto c: I->cases()) {
-      ICmpInst *condProto = new ICmpInst(ICmpInst::Predicate::ICMP_EQ, I->getCondition(), c.getCaseValue());
+      // insert into BB, because can be used by branch instrumenter
+      Instruction *condProto = CmpInst::Create(Instruction::ICmp, ICmpInst::Predicate::ICMP_EQ, I->getCondition(), c.getCaseValue(), "", I);
       BasicBlock *dummy1 = BasicBlock::Create(M->getContext());
       BasicBlock *dummy2 = BasicBlock::Create(M->getContext());
       Instruction *brProto = BranchInst::Create(dummy1, dummy2, condProto);
@@ -494,7 +495,6 @@ void LLInst::instrumentSwitch(SwitchInst *I)
       brProto->deleteValue();
       dummy1->deleteValue();
       dummy2->deleteValue();
-      condProto->deleteValue();
     }
 
     BasicBlock *dummy1 = BasicBlock::Create(M->getContext());

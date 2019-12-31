@@ -445,9 +445,9 @@ void LLInst::instrumentFunctionEntry(Function *F, Instruction *insertionPoint)
     assert(argIndex < MaxArgNum);
     if (isa<IntegerType>(arg->getType()) || isa<PointerType>(arg->getType())) {
       std::vector<Value *> indices;
-      indices.push_back(ConstantInt::get(U32, 0));
-      indices.push_back(ConstantInt::get(U32, argIndex));
-      Value *TagCell = irb.CreateGEP(passedTags, indices);
+      indices.push_back(ZeroU64);
+      indices.push_back(ConstantInt::get(U64, argIndex));
+      Value *TagCell = irb.CreateInBoundsGEP(passedTags, indices);
       tagByValue[&*arg] = irb.CreateLoad(TagCell, U64);
     }
   }
@@ -466,9 +466,9 @@ void LLInst::instrumentCall(CallInst *I)
     // before call: propagate arguments' tags
     for (unsigned i = 0; i < I->getNumArgOperands(); ++i) {
       std::vector<Value *> indices;
-      indices.push_back(ConstantInt::get(U32, 0));
-      indices.push_back(ConstantInt::get(U32, i));
-      Value *TagCell = beforeInserter.CreateGEP(passedTags, indices);
+      indices.push_back(ZeroU64);
+      indices.push_back(ConstantInt::get(U64, i));
+      Value *TagCell = beforeInserter.CreateInBoundsGEP(passedTags, indices);
       Value *Tag = tagFor(I->getArgOperand(i));
       beforeInserter.CreateStore(Tag, TagCell);
     }

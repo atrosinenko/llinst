@@ -124,9 +124,11 @@ namespace {
     /// \defgroup module-const Variables that should not change during processing of the particular module.
     /// @{
     Module *M;
+    DataLayout *layout;
     Type *Void;
     IntegerType *U8, *U16, *U32, *U64;
     PointerType *pU8, *pU16, *pU32, *pU64;
+    ConstantInt *ZeroU64;
     /**
      * @brief Storage for stack accessible via R10 register.
      */
@@ -171,7 +173,7 @@ namespace {
       if (tagByValue.count(value)) {
         return tagByValue[value];
       } else {
-        return ConstantInt::get(U64, 0);
+        return ZeroU64;
       }
     }
 
@@ -184,6 +186,18 @@ namespace {
       }
     }
 
+    void propagateTag(Value *to, Value *from)
+    {
+      if (to != from) {
+        if (tagByValue.count(from)) {
+          tagByValue[to] = tagByValue[from];
+        } else {
+          tagByValue.erase(to);
+        }
+      }
+    }
+
+    Value *to64bit(IRBuilder<> &irb, Value *opnd);
     void setOperand(unsigned index, Value *opnd, Instruction *insertionPoint);
 
     Value *getReg(unsigned ind)
@@ -193,7 +207,7 @@ namespace {
       }
       assert(ind < BPF_REAL_REG_COUNT);
       if (bpfState.registers[ind] == nullptr) {
-        bpfState.registers[ind] = ConstantInt::get(U64, 0);
+        bpfState.registers[ind] = ZeroU64;
       }
       return bpfState.registers[ind];
     }
@@ -256,6 +270,8 @@ namespace {
     void instrumentRet(ReturnInst *I);
     void instrumentSelect(SelectInst *I);
     void instrumentSwitch(SwitchInst *I);
+    void instrumentGEP(GetElementPtrInst *I);
+    void instrumentIdentity(Instruction *I);
     void instrumentOneInstruction(BasicBlock *BB, unsigned currentInstInsnIdx);
   };
 }
@@ -324,8 +340,24 @@ LLInst::LLInst() :
   ModulePass(ID),
   tlMode(getenv("NOTLS") ? GlobalValue::ThreadLocalMode::NotThreadLocal : GlobalValue::ThreadLocalMode::GeneralDynamicTLSModel),
   loader(callbackNames(), std::string(getenv("BPF_INST"))),
-  instrumenters(parseInstrumenters(loader))
+  instrumenters(parseInstrumenters(loader)),
+  layout(nullptr)
 {
+}
+
+Value *LLInst::to64bit(IRBuilder<> &irb, Value *opnd)
+{
+  unsigned width = cast<IntegerType>(opnd->getType())->getBitWidth();
+  Value *result;
+  if (width < 64) {
+    result = irb.CreateZExt(opnd, U64);
+  } else if (width > 64) {
+    result = irb.CreateTrunc(opnd, U64);
+  } else {
+    result = opnd;
+  }
+  propagateTag(result, opnd);
+  return result;
 }
 
 void LLInst::setOperand(unsigned index, Value *opnd, Instruction *insertionPoint)
@@ -336,16 +368,9 @@ void LLInst::setOperand(unsigned index, Value *opnd, Instruction *insertionPoint
   if (isa<PointerType>(opnd->getType()))
     opnd = irb.CreatePtrToInt(opnd, U64);
   else if (!isa<IntegerType>(opnd->getType()))
-    opnd = ConstantInt::get(U64, 0);
+    opnd = ZeroU64;
 
-  unsigned width = cast<IntegerType>(opnd->getType())->getBitWidth();
-  if (width < 64) {
-    setReg(1 + index, irb.CreateZExt(opnd, U64));
-  } else if (width > 64) {
-    setReg(1 + index, irb.CreateTrunc(opnd, U64));
-  } else {
-    setReg(1 + index, opnd);
-  }
+  setReg(1 + index, to64bit(irb, opnd));
 }
 
 void LLInst::performInstrumentation(Instruction *proto, Instruction *taggedInsn, Instruction *insertionPoint)
@@ -381,7 +406,7 @@ void LLInst::performInstrumentation(Instruction *proto, Instruction *taggedInsn,
     tagToSet = PHINode::Create(U64, 0, "", exitPoint->getFirstNonPHI());
 
     // do not pass nullptr incoming Value* to PHINode, handle all-NULL manually
-    bpfState.returnedTag = ConstantInt::get(U64, 0);
+    bpfState.returnedTag = ZeroU64;
     maySetTag = false;
 
     BasicBlock *instrumenterContainer = BasicBlock::Create(M->getContext(), "", insertionPoint->getFunction(), exitPoint);
@@ -428,7 +453,7 @@ void LLInst::instrumentCall(CallInst *I)
   if (I) {
     IRBuilder<> beforeInserter(I);
     // unset returned tag
-    beforeInserter.CreateStore(ConstantInt::get(U64, 0), returnedTag);
+    beforeInserter.CreateStore(ZeroU64, returnedTag);
 
     // before call: propagate arguments' tags
     for (unsigned i = 0; i < I->getNumArgOperands(); ++i) {
@@ -507,8 +532,61 @@ void LLInst::instrumentSwitch(SwitchInst *I)
   }
 }
 
+void LLInst::instrumentGEP(GetElementPtrInst *I)
+{
+  if (I && !isa<Constant>(I)) {
+    Type *pointerTy = I->getPointerOperandType();
+    Instruction *pointerVal = PtrToIntInst::Create(Instruction::PtrToInt, I->getPointerOperand(), U64, "", I);
+    propagateTag(pointerVal, I->getPointerOperand());
+    for (auto &use: I->indices()) {
+      Value *idx = use.get();
+      ConstantInt *idxAsConst = dyn_cast<ConstantInt>(idx);
+
+      Type *elementTy;
+      if (pointerTy->isStructTy()) {
+        IRBuilder<> irb(I);
+        StructType *structTy = cast<StructType>(pointerTy);
+        elementTy = structTy->getElementType(idxAsConst->getZExtValue());
+        uint offset = layout->getStructLayout(structTy)->getElementOffset(idxAsConst->getZExtValue());
+        pointerVal = BinaryOperator::Create(Instruction::Add, pointerVal, ConstantInt::get(U64, offset), "", I);
+        performInstrumentation(pointerVal, pointerVal, pointerVal);
+      } else {
+        elementTy = pointerTy->isPointerTy() ? pointerTy->getPointerElementType() : pointerTy->getArrayElementType();
+
+        if (idxAsConst == nullptr || !idxAsConst->isZero()) {
+          Value *off;
+          if (idxAsConst == nullptr || !idxAsConst->isOne()) {
+            IRBuilder<> irb(I);
+            Instruction *mul = BinaryOperator::Create(Instruction::Mul,
+                                                      to64bit(irb, idx),
+                                                      ConstantInt::get(U64, layout->getTypeAllocSize(elementTy)),
+                                                      "", I);
+            off = mul;
+            performInstrumentation(mul, mul, mul);
+          } else {
+            off = ConstantInt::get(U64, layout->getTypeAllocSize(elementTy));
+          }
+          pointerVal = BinaryOperator::Create(Instruction::Add, pointerVal, off, "", I);
+          performInstrumentation(pointerVal, pointerVal, pointerVal);
+        }
+      }
+      pointerTy = elementTy;
+    }
+    propagateTag(I, pointerVal);
+  }
+}
+
+void LLInst::instrumentIdentity(Instruction *I)
+{
+  if (isa<IntToPtrInst>(I) || isa<PtrToIntInst>(I) || isa<BitCastInst>(I)) {
+    propagateTag(I, I->getOperand(0));
+  }
+}
+
 bool LLInst::runOnModule(Module &_M) {
   M = &_M;
+  delete layout;
+  layout = new DataLayout(M);
   Void = Type::getVoidTy(M->getContext());
   U8  = IntegerType::getInt8Ty(M->getContext());
   U16 = IntegerType::getInt16Ty(M->getContext());
@@ -518,6 +596,7 @@ bool LLInst::runOnModule(Module &_M) {
   pU16 = PointerType::get(U16, 0);
   pU32 = PointerType::get(U32, 0);
   pU64 = PointerType::get(U64, 0);
+  ZeroU64 = ConstantInt::get(U64, 0);
 
   createImports();
   createSubstitutes();
@@ -545,6 +624,9 @@ bool LLInst::runOnModule(Module &_M) {
       instrumentCall(dyn_cast<CallInst>(I));
       instrumentRet(dyn_cast<ReturnInst>(I));
       instrumentSelect(dyn_cast<SelectInst>(I));
+      instrumentSwitch(dyn_cast<SwitchInst>(I));
+      instrumentGEP(dyn_cast<GetElementPtrInst>(I));
+      instrumentIdentity(I);
 
       performInstrumentation(I, I, I); // try generic case
     }
@@ -585,7 +667,7 @@ void LLInst::createImports() {
   passedTags = createIntegerArray(U64, MaxArgNum, GlobalValue::LinkageTypes::CommonLinkage, "__llinst_passed_tags");
 
   returnedTag = new GlobalVariable(*M, U64, false, GlobalValue::LinkageTypes::CommonLinkage,
-                                   ConstantInt::get(U64, 0), "__llinst_returned_tag", nullptr, tlMode);
+                                   ZeroU64, "__llinst_returned_tag", nullptr, tlMode);
 
   FunctionType *slowCallTy = FunctionType::get(U64, ArrayRef<Type*>(U64), false);
   slowCallCallback = Function::Create(slowCallTy, GlobalValue::LinkageTypes::ExternalLinkage, "event_dispatch_slow_call", M);

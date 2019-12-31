@@ -164,6 +164,7 @@ namespace {
     PHINode *tagToSet;
     /// Set to true if at least one instrumenter branch invokes set_tag().
     bool maySetTag;
+    bool tagsEnabled;
     /// BasicBlock to jump from the eBPF instrumenter program on exit.
     BasicBlock *exitPoint;
     /// @}
@@ -343,6 +344,7 @@ LLInst::LLInst() :
   instrumenters(parseInstrumenters(loader)),
   layout(nullptr)
 {
+  tagsEnabled = getenv("NO_TAGS") == NULL;
 }
 
 Value *LLInst::to64bit(IRBuilder<> &irb, Value *opnd)
@@ -434,6 +436,9 @@ void LLInst::instrumentPHI(PHINode *phi)
 void LLInst::instrumentFunctionEntry(Function *F, Instruction *insertionPoint)
 {
   // load passed argument tags
+  if (!tagsEnabled)
+    return;
+
   IRBuilder<> irb(insertionPoint);
   unsigned argIndex = 0;
   for (auto arg = F->arg_begin(); arg != F->arg_end(); ++arg, ++argIndex) {
@@ -450,6 +455,9 @@ void LLInst::instrumentFunctionEntry(Function *F, Instruction *insertionPoint)
 
 void LLInst::instrumentCall(CallInst *I)
 {
+  if (!tagsEnabled)
+    return;
+
   if (I) {
     IRBuilder<> beforeInserter(I);
     // unset returned tag
@@ -476,7 +484,7 @@ void LLInst::instrumentCall(CallInst *I)
 
 void LLInst::instrumentRet(ReturnInst *I)
 {
-  if (I) {
+  if (tagsEnabled && I) {
     new StoreInst(tagFor(I->getReturnValue()), returnedTag, I);
   }
 }
@@ -664,10 +672,12 @@ void LLInst::createImports() {
   // Create own symbols
 
   bpfStack = createIntegerArray(U8, NumStackBytes, GlobalValue::LinkageTypes::CommonLinkage, "__llinst_bpf_stack");
-  passedTags = createIntegerArray(U64, MaxArgNum, GlobalValue::LinkageTypes::CommonLinkage, "__llinst_passed_tags");
 
-  returnedTag = new GlobalVariable(*M, U64, false, GlobalValue::LinkageTypes::CommonLinkage,
-                                   ZeroU64, "__llinst_returned_tag", nullptr, tlMode);
+  if (tagsEnabled) {
+    passedTags = createIntegerArray(U64, MaxArgNum, GlobalValue::LinkageTypes::CommonLinkage, "__llinst_passed_tags");
+    returnedTag = new GlobalVariable(*M, U64, false, GlobalValue::LinkageTypes::CommonLinkage,
+                                     ZeroU64, "__llinst_returned_tag", nullptr, tlMode);
+  }
 
   FunctionType *slowCallTy = FunctionType::get(U64, ArrayRef<Type*>(U64), false);
   slowCallCallback = Function::Create(slowCallTy, GlobalValue::LinkageTypes::ExternalLinkage, "event_dispatch_slow_call", M);

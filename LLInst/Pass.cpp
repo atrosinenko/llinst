@@ -671,7 +671,9 @@ void LLInst::createImports() {
 
   // Create own symbols
 
-  bpfStack = createIntegerArray(U8, NumStackBytes, GlobalValue::LinkageTypes::CommonLinkage, "__llinst_bpf_stack");
+  // Make stack internal to help optimizer
+  // In fact, it is instruction-local
+  bpfStack = createIntegerArray(U8, NumStackBytes, GlobalValue::LinkageTypes::InternalLinkage, "__llinst_bpf_stack");
 
   if (tagsEnabled) {
     passedTags = createIntegerArray(U64, MaxArgNum, GlobalValue::LinkageTypes::CommonLinkage, "__llinst_passed_tags");

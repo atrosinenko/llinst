@@ -952,6 +952,16 @@ void LLInst::emitBr(BasicBlock *BB, unsigned currentInstInsnIdx)
   default: abort();
   }
   assert(currentInsn.offset > 0);
+
+  if (isa<ConstantInt>(condition)) {
+    if (cast<ConstantInt>(condition)->isZero()) {
+      instrumentOneInstruction(BB, currentInstInsnIdx + 1);
+    } else {
+      instrumentOneInstruction(BB, currentInstInsnIdx + currentInsn.offset + 1);
+    }
+    return;
+  }
+
   BasicBlock *ifTrue = BasicBlock::Create(BB->getContext(), "", BB->getParent(), exitPoint);
   BasicBlock *ifFalse = BasicBlock::Create(BB->getContext(), "", BB->getParent(), exitPoint);
   irb.CreateCondBr(condition, ifTrue, ifFalse);

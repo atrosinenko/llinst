@@ -404,11 +404,14 @@ void LLInst::performInstrumentation(Instruction *proto, Instruction *taggedInsn,
     }
 
     exitPoint = insertionPoint->getParent()->splitBasicBlock(insertionPoint);
-    tagToSet = PHINode::Create(U64, 0, "", exitPoint->getFirstNonPHI());
 
-    // do not pass nullptr incoming Value* to PHINode, handle all-NULL manually
-    bpfState.returnedTag = ZeroU64;
-    maySetTag = false;
+    if (tagsEnabled) {
+      tagToSet = PHINode::Create(U64, 0, "", exitPoint->getFirstNonPHI());
+
+      // do not pass nullptr incoming Value* to PHINode, handle all-NULL manually
+      bpfState.returnedTag = ZeroU64;
+      maySetTag = false;
+    }
 
     BasicBlock *toBeInstrumented = exitPoint->getPrevNode();
     // strip old terminator
@@ -419,8 +422,10 @@ void LLInst::performInstrumentation(Instruction *proto, Instruction *taggedInsn,
     // perform actual instrumentation
     instrumentOneInstruction(toBeInstrumented, 0);
 
-    // set tag
-    setTag(maySetTag ? tagToSet : nullptr);
+    if (tagsEnabled) {
+      // set tag
+      setTag(maySetTag ? tagToSet : nullptr);
+    }
   }
 }
 
@@ -654,7 +659,9 @@ bool LLInst::runOnModule(Module &_M) {
 
 void LLInst::emitExit(BasicBlock *BB) {
   IRBuilder<> irb(BB);
-  tagToSet->addIncoming(bpfState.returnedTag, BB);
+  if (tagsEnabled) {
+    tagToSet->addIncoming(bpfState.returnedTag, BB);
+  }
   irb.CreateBr(exitPoint);
 }
 
@@ -899,8 +906,10 @@ void LLInst::emitStopIfNoTagsCallback(BasicBlock *BB, unsigned, uint64_t)
 
 void LLInst::emitSetTag(BasicBlock *, unsigned, uint64_t)
 {
-  bpfState.returnedTag = bpfState.registers[1];
-  maySetTag = true;
+  if (tagsEnabled) {
+    bpfState.returnedTag = bpfState.registers[1];
+    maySetTag = true;
+  }
 }
 
 void LLInst::emitBr(BasicBlock *BB, unsigned currentInstInsnIdx)

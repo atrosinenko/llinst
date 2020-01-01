@@ -463,7 +463,7 @@ void LLInst::instrumentCall(CallInst *I)
   if (!tagsEnabled)
     return;
 
-  if (I) {
+  if (I && I->getCalledFunction() && !I->getCalledFunction()->isIntrinsic()) {
     IRBuilder<> beforeInserter(I);
     // unset returned tag
     beforeInserter.CreateStore(ZeroU64, returnedTag);

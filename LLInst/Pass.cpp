@@ -451,10 +451,8 @@ void LLInst::instrumentFunctionEntry(Function *F, Instruction *insertionPoint)
   for (auto arg = F->arg_begin(); arg != F->arg_end(); ++arg, ++argIndex) {
     assert(argIndex < MaxArgNum);
     if (isa<IntegerType>(arg->getType()) || isa<PointerType>(arg->getType())) {
-      std::vector<Value *> indices;
-      indices.push_back(ZeroU64);
-      indices.push_back(ConstantInt::get(U64, argIndex));
-      Value *TagCell = irb.CreateInBoundsGEP(passedTags, indices);
+      Value *indices[2] = { ZeroU64, ConstantInt::get(U64, argIndex) };
+      Value *TagCell = irb.CreateInBoundsGEP(passedTags, ArrayRef<Value *>(indices, 2));
       tagByValue[&*arg] = irb.CreateLoad(TagCell, U64);
     }
   }
@@ -472,10 +470,8 @@ void LLInst::instrumentCall(CallInst *I)
 
     // before call: propagate arguments' tags
     for (unsigned i = 0; i < I->getNumArgOperands(); ++i) {
-      std::vector<Value *> indices;
-      indices.push_back(ZeroU64);
-      indices.push_back(ConstantInt::get(U64, i));
-      Value *TagCell = beforeInserter.CreateInBoundsGEP(passedTags, indices);
+      Value *indices[2] = { ZeroU64, ConstantInt::get(U64, i) };
+      Value *TagCell = beforeInserter.CreateInBoundsGEP(passedTags, ArrayRef<Value*>(indices, 2));
       Value *Tag = tagFor(I->getArgOperand(i));
       beforeInserter.CreateStore(Tag, TagCell);
     }
@@ -524,21 +520,18 @@ void LLInst::instrumentSwitch(SwitchInst *I)
     // ...
     // br label_default
 
+    BasicBlock *dummy1 = BasicBlock::Create(M->getContext());
+    BasicBlock *dummy2 = BasicBlock::Create(M->getContext());
+
     for (auto c: I->cases()) {
       // insert into BB, because can be used by branch instrumenter
       Instruction *condProto = CmpInst::Create(Instruction::ICmp, ICmpInst::Predicate::ICMP_EQ, I->getCondition(), c.getCaseValue(), "", I);
-      BasicBlock *dummy1 = BasicBlock::Create(M->getContext());
-      BasicBlock *dummy2 = BasicBlock::Create(M->getContext());
       Instruction *brProto = BranchInst::Create(dummy1, dummy2, condProto);
       performInstrumentation(condProto, condProto, I);
       performInstrumentation(brProto, brProto, I);
       brProto->deleteValue();
-      dummy1->deleteValue();
-      dummy2->deleteValue();
     }
 
-    BasicBlock *dummy1 = BasicBlock::Create(M->getContext());
-    BasicBlock *dummy2 = BasicBlock::Create(M->getContext());
     Instruction *brProto = BranchInst::Create(dummy1, dummy2, ConstantInt::getTrue(M->getContext()));
     performInstrumentation(brProto, brProto, I);
     brProto->deleteValue();

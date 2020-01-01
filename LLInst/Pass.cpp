@@ -404,18 +404,20 @@ void LLInst::performInstrumentation(Instruction *proto, Instruction *taggedInsn,
     }
 
     exitPoint = insertionPoint->getParent()->splitBasicBlock(insertionPoint);
-    BranchInst *entryPoint = cast<BranchInst>(exitPoint->getPrevNode()->getTerminator());
     tagToSet = PHINode::Create(U64, 0, "", exitPoint->getFirstNonPHI());
 
     // do not pass nullptr incoming Value* to PHINode, handle all-NULL manually
     bpfState.returnedTag = ZeroU64;
     maySetTag = false;
 
-    BasicBlock *instrumenterContainer = BasicBlock::Create(M->getContext(), "", insertionPoint->getFunction(), exitPoint);
-    entryPoint->setSuccessor(0, instrumenterContainer);
+    BasicBlock *toBeInstrumented = exitPoint->getPrevNode();
+    // strip old terminator
+    Instruction *terminator = toBeInstrumented->getTerminator();
+    terminator->removeFromParent();
+    terminator->deleteValue();
 
     // perform actual instrumentation
-    instrumentOneInstruction(instrumenterContainer, 0);
+    instrumentOneInstruction(toBeInstrumented, 0);
 
     // set tag
     setTag(maySetTag ? tagToSet : nullptr);

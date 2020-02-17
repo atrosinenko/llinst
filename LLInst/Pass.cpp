@@ -83,7 +83,7 @@ namespace {
      * Should not be fetched from the prototypeInsn directly, since
      * can be swapped in accordance with bpf.h, etc.
      */
-    Value *opnds[2];
+    Value *opnds[3];
 
     uint64_t currentPseudoPc;
   };
@@ -289,8 +289,10 @@ const std::vector<std::pair<std::string, std::pair<LLInst::EmitCallbackFun, uint
   std::make_pair("bit_width_res",    std::make_pair(&LLInst::emitGetBitWidthCallback, 0)),
   std::make_pair("bit_width1",       std::make_pair(&LLInst::emitGetBitWidthCallback, 1)),
   std::make_pair("bit_width2",       std::make_pair(&LLInst::emitGetBitWidthCallback, 2)),
+  std::make_pair("bit_width3",       std::make_pair(&LLInst::emitGetBitWidthCallback, 3)),
   std::make_pair("tag1",             std::make_pair(&LLInst::emitGetTagCallback, 1)),
   std::make_pair("tag2",             std::make_pair(&LLInst::emitGetTagCallback, 2)),
+  std::make_pair("tag3",             std::make_pair(&LLInst::emitGetTagCallback, 3)),
 };
 
 const BpfProg *LLInst::instrumenterFor(const BpfLoader &loader, const std::string name)
@@ -388,7 +390,11 @@ void LLInst::performInstrumentation(Instruction *proto, Instruction *taggedInsn,
     // populate operands
     if (isa<StoreInst>(proto)) {
       setOperand(0, cast<StoreInst>(proto)->getPointerOperand(), insertionPoint);
-      setOperand(1, cast<StoreInst>(proto)->getValueOperand(), insertionPoint);
+      setOperand(1, ZeroU64, insertionPoint);
+      setOperand(2, cast<StoreInst>(proto)->getValueOperand(), insertionPoint);
+    } else if (isa<LoadInst>(proto)) {
+      setOperand(0, cast<LoadInst>(proto)->getPointerOperand(), insertionPoint);
+      setOperand(1, ZeroU64, insertionPoint);
     } else if (isa<BranchInst>(proto)) {
       BranchInst *br = cast<BranchInst>(proto);
       if (br->isConditional())

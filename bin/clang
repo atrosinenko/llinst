@@ -15,5 +15,5 @@ elif echo " $* " | grep -E ' [-]c| -?-shared' > /dev/null
 then
 	exec $PROG -fplugin="$(dirname $0)/../build/LLInst/libLLInst.so" -fPIC "$@"
 else
-	exec $PROG -fplugin="$(dirname $0)/../build/LLInst/libLLInst.so" "$(dirname $0)/../build/noninstrumented.o" -ldl "$NATIVE_INST" "$@"
+	exec $PROG -fplugin="$(dirname $0)/../build/LLInst/libLLInst.so" "$(dirname $0)/../build/LLInst/noninstrumented.o" -ldl "$NATIVE_INST" "$@"
 fi
